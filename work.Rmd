@@ -1,0 +1,281 @@
+---
+title: "data.table: fast and efficient extension of data.frame"
+output: ioslides_presentation
+---
+
+```{r include=F}
+library(microbenchmark)
+library(sqldf)
+library(dplyr)
+library(data.table)
+library(formattable)
+
+wd <- 'H:/scripts/r/datatable_presentation'
+
+options(datatable.print.topn=3)
+options(datatable.print.nrows=5)
+
+set.seed(42)
+```
+
+## motivations
+* `data.table` is significantly faster and more memory efficient than any other R options  
+* some performance comparisons for left joining two datasets of 50M rows ([source](https://stackoverflow.com/questions/1299871/how-to-join-merge-data-frames-inner-outer-left-right/34219998#34219998)):  
+
+```{r echo=F}
+# n = 5e7
+# set.seed(108)
+# df1 = data.frame(x=sample(n,n-1L), y1=rnorm(n-1L))
+# df2 = data.frame(x=sample(n,n-1L), y2=rnorm(n-1L))
+# dt1 = as.data.table(df1)
+# dt2 = as.data.table(df2)
+# 
+# mb <- microbenchmark(
+#   times = 1L,
+#   base = merge(df1, df2, by = "x", all.x = TRUE),
+#   sqldf = sqldf("SELECT * FROM df1 LEFT OUTER JOIN df2 ON df1.x = df2.x"),
+#   dplyr = left_join(df1, df2, by = c("x"="x")),
+#   DT = dt2[dt1, on = "x"]
+# )
+# dtmb <- as.data.table(summary(mb))
+# fwrite(dtmb, file = file.path(wd, 'dtmb.csv'))
+dtmb <- fread(file = file.path(wd, 'dtmb.csv'))
+dtmb[order(-min), .(Method = expr, Time = comma(min, digits = 2))]
+```
+
+# basics
+## construction
+```{r}
+indicators <- 1:100
+x <- data.table(
+  indicator = rep(indicators, each = 26),
+  group = rep(letters, times = length(indicators)),
+  measurement = rnorm(26 * length(indicators))
+)
+x[]
+```
+
+## syntax | x[i, j, by]
+
+# i
+## basic subsetting
+```{r}
+x[2, ]
+x[2]
+```
+
+## predicate subsetting
+```{r}
+x[indicator %in% c(1:3, 10:20), ]
+```
+
+## predicate subsetting
+```{r}
+x[group %like% '[ab]', ] # %like% provided by data.table
+```
+
+# j
+## j
+```{r}
+x[, .(group, measurement)]
+```
+
+# by
+## by
+```{r}
+x[, .(group, mean(measurement))]
+```
+
+## by
+```{r}
+x[, .(mean(measurement)), by = .(group)]
+```
+
+# Special Symbols
+## .N
+```{r}
+x[, .N, by = .(group)]
+```
+
+## .N
+```{r}
+x[.N, ]
+x[, .N]
+```
+
+## .SD/.SDcols
+```{r}
+x[
+  ,
+  .SD,
+  .SDcols = c('group', 'measurement')
+]
+```
+
+## .SD/.SDcols
+```{r}
+x <- cbind(x, measurement2 = runif(x[, .N]))
+
+x[
+  ,
+  lapply(.SD, mean),
+  by = .(indicator),
+  .SDcols = c('measurement', 'measurement2')
+]
+```
+
+## .I
+```{r}
+grpcols <- c('group')
+x[
+  ,
+  head(.SD, 1),
+  by = grpcols,
+  .SDcols = c('measurement')
+]
+```
+
+## .I
+```{r}
+x[
+  x[
+    ,
+    .I[abs(measurement - max(measurement)) < sqrt(.Machine$double.eps)],
+    by = grpcols
+  ]$V1,
+]
+```
+
+## :=
+```{r}
+x[2, ]
+x[2, measurement := rnorm(1)]
+x[2, ]
+```
+
+## :=
+```{r}
+x[
+  ,
+  measurement3 := mean(measurement) - mean(measurement2),
+  by = .(indicator)
+]
+x[]
+```
+
+## :=
+```{r}
+x[, c(paste0('measurement', 2:3)) := NULL]
+x[]
+```
+
+# on
+## standard SQL joins
+### right[left, on = joincols, nomatch = c(NA, NULL)]
+## standard SQL joins
+```{r}
+observers <- rbind(
+  data.table(observer = 'nick', group = head(letters, 3)),
+  data.table(observer = 'schmidt', group = tail(letters, 3))
+)
+observers[]
+```
+
+## standard SQL joins | left join
+```{r}
+observers[x, on = c('group')]
+```
+
+## standard SQL joins | right join
+```{r}
+x[observers, on = c('group')]
+```
+
+## rolling joins
+```{r}
+tools <- data.table(
+  indicator = c(1, 51),
+  tool = c('iphone', 'samsung galaxy')
+)
+tools[]
+```
+
+## rolling joins
+```{r}
+tools[x, on = c('indicator'), roll = Inf]
+```
+
+## notjoins
+```{r}
+x[!observers, on = c('group')]
+```
+
+## advanced subsetting
+```{r}
+x[.(14:15), on = c('indicator')]
+```
+
+## advanced subsetting | CJ
+```{r}
+x[
+  CJ(indicator = 7:9, group = c('f', 'g', 'y')),
+  on = c('indicator', 'group')
+]
+```
+
+## advanced subsetting | CJ
+```{r}
+x <- x[!sample(.N, size = 20), ]
+x[]
+```
+
+## advanced subsetting | CJ
+```{r}
+x <- x[
+  CJ(indicator, group, unique = T),
+  on = c('indicator', 'group')
+]
+x[]
+```
+
+## advanced subsetting | CJ
+```{r}
+x[!complete.cases(x), ]
+```
+
+# data.table methods
+## fread/fwrite
+* `data.table`'s .*sv reading and writing functions  
+* like rest of package, extremely fast and memory-efficient  
+* highly customizable; I pretty much never do anything except  
+      + `fread(file = 'path/to/file.csv')  
+      + fwrite(x, file = 'path/to/file.csv')  
+
+## order
+```{r}
+x[order(-measurement), ]
+```
+
+## reshaping | dcast
+```{r}
+xwide <- dcast(x, indicator ~ group, value.var = 'measurement')
+xwide[, .SD, .SDcols = head(names(xwide), 6)]
+```
+
+## reshaping | melt
+```{r message=F}
+melt(xwide, id.vars = c('indicator'))
+```
+
+## shift
+```{r}
+x[, shift(measurement, n = 1:2, type = 'lag'), by = .(group)]
+```
+
+## frollapply
+* two common uses `frollmean` and `frollsum` are also available
+```{r}
+x[, frollapply(measurement, n = 3, min), by = .(indicator)]
+```
+
+# questions
